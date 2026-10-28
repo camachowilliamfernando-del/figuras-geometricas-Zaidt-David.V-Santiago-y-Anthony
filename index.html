@@ -1,0 +1,1002 @@
+<!DOCTYPE html>
+<html lang="es" class="h-full dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GeoMind AI - Detector de Figuras 2D y 3D en Recuadro Central</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            green: '#10B981',
+                            blue: '#3B82F6',
+                            purple: '#8B5CF6',
+                            cyan: '#06B6D4',
+                            dark: '#0B0F17',
+                            card: '#161F30',
+                            border: '#2A364F'
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace']
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- Three.js para renderizado 3D -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+        body { 
+            font-family: 'Inter', sans-serif; 
+            background-color: #0B0F17; 
+            color: #F3F4F6;
+        }
+
+        /* Transformación espejo para la cámara */
+        .mirror-view {
+            transform: scaleX(-1);
+        }
+
+        /* Animación neón del recuadro central (Target ROI) */
+        @keyframes laser-glow {
+            0%, 100% { 
+                border-color: rgba(16, 185, 129, 0.9); 
+                box-shadow: 0 0 25px rgba(16, 185, 129, 0.5), inset 0 0 15px rgba(16, 185, 129, 0.2); 
+            }
+            50% { 
+                border-color: rgba(6, 182, 212, 1); 
+                box-shadow: 0 0 35px rgba(6, 182, 212, 0.7), inset 0 0 25px rgba(6, 182, 212, 0.3); 
+            }
+        }
+
+        .roi-frame-active {
+            animation: laser-glow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+
+        @keyframes scanning-line {
+            0% { top: 0%; opacity: 0.8; }
+            50% { opacity: 1; }
+            100% { top: 96%; opacity: 0.8; }
+        }
+
+        .scan-laser {
+            position: absolute;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, #10B981, #06B6D4, transparent);
+            box-shadow: 0 0 10px #10B981;
+            animation: scanning-line 2.2s ease-in-out infinite alternate;
+        }
+
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: #161F30; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #2A364F; border-radius: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #3B82F6; }
+
+        .glass-panel {
+            background: rgba(22, 31, 48, 0.85);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+    </style>
+</head>
+<body class="h-screen flex flex-col overflow-hidden custom-scrollbar">
+
+    <!-- Header Principal -->
+    <header class="border-b border-brand-border bg-brand-card/90 backdrop-blur-md z-50 flex-none px-6 py-3">
+        <div class="max-w-7xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-3">
+            <div class="flex items-center space-x-3">
+                <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-brand-green via-brand-cyan to-brand-blue flex items-center justify-center shadow-lg shadow-brand-green/20">
+                    <svg class="w-6 h-6 text-slate-950 font-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M14 10l-2 1m0 0l-2-1m2 1v2.5M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"></path>
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="text-xl font-bold tracking-tight text-white flex items-center gap-2">
+                        GeoMind <span class="bg-gradient-to-r from-brand-green via-brand-cyan to-brand-blue bg-clip-text text-transparent font-extrabold">AI Target-ROI</span>
+                    </h1>
+                    <p class="text-xs text-slate-400">Sensor de Visión por Computador en Recuadro Central</p>
+                </div>
+            </div>
+
+            <!-- Controles de Interfaz -->
+            <div class="flex items-center space-x-3">
+                <button id="btn-mask-toggle" onclick="toggleMaskView()" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-brand-dark border border-brand-border text-slate-300 hover:text-white flex items-center gap-1.5 transition">
+                    👁️ <span id="mask-status-text">Ver Máscara Binaria</span>
+                </button>
+
+                <button id="btn-speech-toggle" onclick="toggleSpeech()" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-brand-dark border border-brand-border text-slate-300 hover:text-white flex items-center gap-1.5 transition">
+                    <span id="speech-icon">🔊</span>
+                    <span id="speech-status">Voz: Activada</span>
+                </button>
+
+                <div id="status-badge" class="inline-flex items-center px-3.5 py-1.5 rounded-full text-xs font-semibold bg-brand-green/10 text-brand-green border border-brand-green/30 shadow-inner">
+                    <span class="w-2 h-2 mr-2 bg-brand-green rounded-full animate-ping"></span>
+                    <span>Sensor JS Nativo Activo</span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Contenido Principal -->
+    <main class="flex-grow max-w-7xl w-full mx-auto p-4 md:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 overflow-hidden">
+
+        <!-- Panel Izquierdo: Cámara con Recuadro ROI Central Fijo -->
+        <div class="lg:col-span-7 flex flex-col space-y-4 h-full overflow-y-auto pr-1 custom-scrollbar">
+
+            <div class="glass-panel rounded-2xl p-4 shadow-2xl flex flex-col">
+                <div class="flex justify-between items-center mb-3">
+                    <div class="flex items-center space-x-2">
+                        <span class="w-2.5 h-2.5 rounded-full bg-brand-green"></span>
+                        <h2 class="text-xs font-bold uppercase tracking-wider text-slate-300">Cámara Modo Espejo con Zona Target Fija</h2>
+                    </div>
+                    <div class="text-xs font-mono text-brand-cyan bg-brand-dark/80 px-2.5 py-1 rounded-lg border border-brand-border">
+                        ROI Central: 240x240 px
+                    </div>
+                </div>
+
+                <!-- Ventana Fija de Cámara con Recuadro Central -->
+                <div id="camera-viewport" class="relative w-full aspect-video max-h-[380px] bg-slate-950 rounded-xl overflow-hidden border-2 border-brand-border flex items-center justify-center select-none">
+                    
+                    <!-- Indicador de Estado del Escáner -->
+                    <div class="absolute top-3 left-3 z-30 flex items-center space-x-2 bg-brand-dark/85 backdrop-blur-md px-3 py-1.5 rounded-lg border border-brand-border text-xs">
+                        <span id="roi-status-dot" class="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
+                        <span id="roi-status-text" class="text-slate-300 font-mono">Ubique la figura en el recuadro verde</span>
+                    </div>
+
+                    <div class="absolute top-3 right-3 z-30 bg-brand-dark/85 backdrop-blur-md px-2.5 py-1 rounded-lg border border-brand-border text-[10px] text-brand-cyan font-mono">
+                        📷 Espejo Activo
+                    </div>
+
+                    <!-- Video Feed (Modo Espejo) -->
+                    <video id="webcam-feed" autoplay playsinline muted class="absolute inset-0 w-full h-full object-cover mirror-view"></video>
+
+                    <!-- Overlay Canvas de Máscara de Sensor / Inspección -->
+                    <canvas id="canvas-mask-preview" class="absolute inset-0 w-full h-full object-cover pointer-events-none z-10 hidden mirror-view"></canvas>
+
+                    <!-- Capa de oscurecimiento exterior -->
+                    <div class="absolute inset-0 z-15 pointer-events-none bg-slate-950/40" style="mask-image: radial-gradient(square at center, transparent 120px, black 121px); -webkit-mask-image: radial-gradient(square at center, transparent 120px, black 121px);"></div>
+
+                    <!-- RECUADRO CENTRAL FIJO (TARGET ROI ZONE) -->
+                    <div id="roi-box" class="absolute w-[240px] h-[240px] z-20 pointer-events-none border-2 border-brand-green rounded-2xl roi-frame-active flex items-center justify-center">
+                        <!-- Esquinas Neón -->
+                        <div class="absolute -top-1 -left-1 w-5 h-5 border-t-4 border-l-4 border-brand-cyan rounded-tl-lg"></div>
+                        <div class="absolute -top-1 -right-1 w-5 h-5 border-t-4 border-r-4 border-brand-cyan rounded-tr-lg"></div>
+                        <div class="absolute -bottom-1 -left-1 w-5 h-5 border-b-4 border-l-4 border-brand-cyan rounded-bl-lg"></div>
+                        <div class="absolute -bottom-1 -right-1 w-5 h-5 border-b-4 border-r-4 border-brand-cyan rounded-br-lg"></div>
+
+                        <!-- Línea Láser -->
+                        <div class="scan-laser"></div>
+
+                        <!-- Mira Central -->
+                        <div class="w-3 h-3 border border-brand-green/60 rounded-full flex items-center justify-center">
+                            <div class="w-1 h-1 bg-brand-cyan rounded-full"></div>
+                        </div>
+
+                        <!-- Etiqueta del Recuadro -->
+                        <div class="absolute -bottom-7 left-1/2 -translate-x-1/2 bg-brand-dark/90 border border-brand-green/40 px-3 py-0.5 rounded-md text-[10px] font-mono text-brand-green whitespace-nowrap shadow-lg">
+                            SENSOR DE ANÁLISIS EXCLUSIVO
+                        </div>
+                    </div>
+
+                    <!-- Overlay Canvas para Detección de Contornos (Modo Espejo) -->
+                    <canvas id="canvas-overlay" class="absolute inset-0 w-full h-full pointer-events-none z-20 mirror-view"></canvas>
+                </div>
+
+                <!-- Controles de Ajuste de Umbral y Calibración -->
+                <div class="mt-3 p-3 bg-brand-dark/90 rounded-xl border border-brand-border flex flex-wrap items-center justify-between gap-3">
+                    <div class="flex items-center space-x-3 w-full sm:w-auto">
+                        <label class="text-xs font-semibold text-slate-300 whitespace-nowrap">Sensibilidad de Detección:</label>
+                        <input id="threshold-slider" type="range" min="30" max="220" value="110" oninput="updateThresholdLabel(this.value)" class="w-32 accent-brand-green cursor-pointer">
+                        <span id="threshold-val" class="text-xs font-mono text-brand-green font-bold">110</span>
+                    </div>
+
+                    <div class="flex items-center space-x-2">
+                        <button onclick="speakCurrentShape()" class="px-3 py-1.5 bg-brand-blue/20 hover:bg-brand-blue/30 text-brand-blue text-xs font-semibold rounded-lg border border-brand-blue/40 transition flex items-center gap-1">
+                            🔊 Pronunciar
+                        </button>
+                        <span class="text-xs text-slate-400 font-mono">FPS: <span id="fps-display" class="text-brand-green font-bold">0</span></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Panel de Métricas Extraídas de la Zona Central -->
+            <div class="glass-panel rounded-2xl p-5 shadow-xl">
+                <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3 flex items-center justify-between">
+                    <span>Métricas del Recuadro Target</span>
+                    <span class="px-2 py-0.5 rounded text-[10px] bg-brand-cyan/20 text-brand-cyan border border-brand-cyan/30 font-mono">Motor JS Nativo</span>
+                </h3>
+
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div class="bg-brand-dark/90 p-3 rounded-xl border border-brand-border">
+                        <span class="text-[10px] text-slate-400 block font-medium">Figura 2D Detectada</span>
+                        <span id="geo-shape" class="text-sm font-bold text-brand-green font-mono truncate block">Esperando...</span>
+                    </div>
+                    <div class="bg-brand-dark/90 p-3 rounded-xl border border-brand-border">
+                        <span class="text-[10px] text-slate-400 block font-medium">Cuerpo 3D Asociado</span>
+                        <span id="geo-3d-name" class="text-sm font-bold text-brand-cyan font-mono truncate block">Esperando...</span>
+                    </div>
+                    <div class="bg-brand-dark/90 p-3 rounded-xl border border-brand-border">
+                        <span class="text-[10px] text-slate-400 block font-medium">Vértices Detectados</span>
+                        <span id="geo-vertices" class="text-sm font-bold text-brand-purple font-mono">0</span>
+                    </div>
+                    <div class="bg-brand-dark/90 p-3 rounded-xl border border-brand-border">
+                        <span class="text-[10px] text-slate-400 block font-medium">Área en Recuadro</span>
+                        <span id="geo-area" class="text-sm font-bold text-white font-mono">0 px²</span>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- Panel Derecho: Visor 3D Interactivo y Ficha Pedagógica -->
+        <div class="lg:col-span-5 flex flex-col space-y-4 h-full overflow-y-auto pr-1 custom-scrollbar">
+
+            <!-- Renderizador Three.js 3D -->
+            <div class="glass-panel rounded-2xl p-4 shadow-xl flex flex-col">
+                <div class="flex justify-between items-center mb-2">
+                    <h2 class="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+                        <span class="w-2 h-2 rounded-full bg-brand-cyan"></span>
+                        Proyección 3D en Tiempo Real
+                    </h2>
+                    <span id="shape-3d-title" class="text-xs font-mono font-bold text-brand-cyan">Objeto 3D</span>
+                </div>
+
+                <div id="wrapper-3d" class="relative w-full h-[220px] bg-slate-950 rounded-xl overflow-hidden border border-brand-border cursor-grab active:cursor-grabbing">
+                    <div id="three-container" class="w-full h-full"></div>
+                    <div class="absolute bottom-2 right-2 text-[9px] text-slate-500 font-mono bg-brand-dark/80 px-2 py-0.5 rounded">
+                        Arrastre para rotar en 360°
+                    </div>
+                </div>
+            </div>
+
+            <!-- Ficha Didáctica Pedagógica -->
+            <div class="glass-panel rounded-2xl p-5 shadow-xl flex-grow flex flex-col border-l-4 border-l-brand-green">
+                <div class="mb-3">
+                    <span class="text-[10px] text-brand-green font-mono font-bold uppercase tracking-widest block">Análisis Geométrico Interactivo</span>
+                    <h2 id="pedagogic-title" class="text-xl font-extrabold text-white mt-0.5">Coloque una Figura en el Centro</h2>
+                </div>
+
+                <div class="space-y-3 flex-grow text-xs text-slate-300">
+                    <div class="bg-brand-dark/80 p-3 rounded-xl border border-brand-border">
+                        <span class="text-slate-400 text-[11px] font-semibold block mb-1">📐 Descripción Educativa:</span>
+                        <p id="pedagogic-desc" class="text-slate-300 leading-relaxed">
+                            Inserte un recorte o dibujo de una figura plana (Triángulo, Cuadrado, Rectángulo, Rombo, Círculo, Pentágono, Hexágono) dentro del recuadro verde central para analizar sus propiedades.
+                        </p>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-2">
+                        <div class="bg-brand-dark/80 p-2.5 rounded-xl border border-brand-border">
+                            <span class="text-slate-400 text-[10px] font-semibold block">Lados / Bordes:</span>
+                            <span id="pedagogic-sides" class="font-bold text-brand-green font-mono text-sm">-</span>
+                        </div>
+                        <div class="bg-brand-dark/80 p-2.5 rounded-xl border border-brand-border">
+                            <span class="text-slate-400 text-[10px] font-semibold block">Vértices 3D / Nodos:</span>
+                            <span id="pedagogic-nodes" class="font-bold text-brand-cyan font-mono text-sm">-</span>
+                        </div>
+                    </div>
+
+                    <div class="bg-brand-dark/80 p-3 rounded-xl border border-brand-border">
+                        <span class="text-slate-400 text-[11px] font-semibold block mb-1">🧮 Fórmula y Propiedad:</span>
+                        <div id="pedagogic-formula" class="font-mono text-brand-purple font-bold text-sm bg-slate-950 p-2 rounded-lg border border-brand-border text-center">
+                            -
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Barra de Nivel de Confianza -->
+                <div class="mt-4 pt-3 border-t border-brand-border">
+                    <div class="flex justify-between items-center text-xs mb-1">
+                        <span class="text-slate-400">Nivel de Ajuste en Recuadro:</span>
+                        <span id="confidence-pct" class="font-bold font-mono text-brand-green">0%</span>
+                    </div>
+                    <div class="w-full bg-slate-900 h-2 rounded-full overflow-hidden border border-brand-border">
+                        <div id="confidence-bar" class="bg-gradient-to-r from-brand-blue via-brand-cyan to-brand-green h-full w-0 transition-all duration-300"></div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+    </main>
+
+    <!-- Canvas Oculto para Procesamiento Interno de Píxeles ROI -->
+    <canvas id="internal-process-canvas" class="hidden"></canvas>
+
+    <!-- Toast Notification -->
+    <div id="toast-notification" class="fixed bottom-5 right-5 z-50 transform translate-y-20 opacity-0 transition-all duration-300 pointer-events-none">
+        <div class="bg-brand-card border border-brand-green text-white px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3">
+            <div id="toast-icon" class="w-3 h-3 rounded-full bg-brand-green"></div>
+            <span id="toast-msg" class="text-xs font-medium">Notificación</span>
+        </div>
+    </div>
+
+    <script>
+        // ==========================================
+        // BASE DE DATOS GEOMÉTRICA DUAL (2D -> 3D)
+        // ==========================================
+        const GEOMETRY_DB = {
+            "Circulo": {
+                name2d: "Círculo",
+                name3d: "Esfera / Cilindro",
+                shape3d: "sphere",
+                sides: "1 Borde Curvo (∞)",
+                nodes: "0 Vértices / 0 Aristas",
+                formula: "Área = π × r²  |  Volumen = (4/3)π × r³",
+                desc: "Figura plana simétrica donde todos los puntos están a la misma distancia del centro. En 3D forma una Esfera.",
+                voice: "Círculo detectado en el recuadro central. Su sólido tridimensional es una Esfera."
+            },
+            "Triangulo": {
+                name2d: "Triángulo",
+                name3d: "Pirámide",
+                shape3d: "pyramid",
+                sides: "3 Lados",
+                nodes: "4 Vértices / 6 Aristas (3D)",
+                formula: "Área = (Base × Altura) / 2",
+                desc: "Polígono de tres lados. En el espacio tridimensional genera una Pirámide.",
+                voice: "Triángulo detectado. Equivale a una Pirámide en tres dimensiones."
+            },
+            "Cuadrado": {
+                name2d: "Cuadrado",
+                name3d: "Cubo (Hexaedro)",
+                shape3d: "cube",
+                sides: "4 Lados Iguales",
+                nodes: "8 Vértices / 12 Aristas (3D)",
+                formula: "Área = L²  |  Volumen = L³",
+                desc: "Cuadrilátero regular de cuatro ángulos rectos (90°). En 3D forma un Cubo.",
+                voice: "Cuadrado detectado. Forma un Cubo regular de seis caras cuadradas."
+            },
+            "Rectangulo": {
+                name2d: "Rectángulo",
+                name3d: "Prisma Rectangular",
+                shape3d: "prism",
+                sides: "4 Lados (Iguales 2 a 2)",
+                nodes: "8 Vértices / 12 Aristas (3D)",
+                formula: "Área = Base × Altura",
+                desc: "Cuadrilátero con lados opuestos de igual longitud. Su cuerpo 3D es un Prisma Rectangular.",
+                voice: "Rectángulo detectado en el centro. Se proyecta como un Prisma Rectangular."
+            },
+            "Rombo": {
+                name2d: "Rombo",
+                name3d: "Octaedro",
+                shape3d: "octahedron",
+                sides: "4 Lados Iguales (Ángulos no 90°)",
+                nodes: "6 Vértices / 12 Aristas (3D)",
+                formula: "Área = (Diagonal Mayor × Diagonal Menor) / 2",
+                desc: "Paralelogramo de cuatro lados de igual longitud pero ángulos oblicuos. En 3D equivale a un Octaedro.",
+                voice: "Rombo detectado. En el espacio tres D equivale a un Octaedro."
+            },
+            "Pentagono": {
+                name2d: "Pentágono",
+                name3d: "Prisma Pentagonal",
+                shape3d: "pentagon_prism",
+                sides: "5 Lados Regulares",
+                nodes: "10 Vértices / 15 Aristas (3D)",
+                formula: "Área = (Perímetro × Apotema) / 2",
+                desc: "Polígono de cinco lados iguales. En el espacio genera un Prisma Pentagonal.",
+                voice: "Pentágono detectado. Su equivalente tridimensional es un Prisma Pentagonal."
+            },
+            "Hexagono": {
+                name2d: "Hexágono",
+                name3d: "Prisma Hexagonal",
+                shape3d: "hexagon_prism",
+                sides: "6 Lados Regulares",
+                nodes: "12 Vértices / 18 Aristas (3D)",
+                formula: "Área = (3 × √3 × L²) / 2",
+                desc: "Polígono de seis lados de igual longitud. Forma una estructura tridimensional de Prisma Hexagonal.",
+                voice: "Hexágono detectado. Forma un Prisma Hexagonal."
+            },
+            "Ovalo": {
+                name2d: "Óvalo / Elipse",
+                name3d: "Cilindro / Elipsoide",
+                shape3d: "cylinder",
+                sides: "Borde Elíptico Continuo",
+                nodes: "2 Caras Circulares (3D)",
+                formula: "Área = π × a × b",
+                desc: "Curva plana curva cerrada. Su extensión tridimensional es un Cilindro o Elipsoide.",
+                voice: "Óvalo detectado en la zona central. Se proyecta como un Cilindro."
+            }
+        };
+
+        // ==========================================
+        // VARIABLES GLOBALES DE ESTADO
+        // ==========================================
+        let webcamVideo = document.getElementById('webcam-feed');
+        let overlayCanvas = document.getElementById('canvas-overlay');
+        let overlayCtx = overlayCanvas.getContext('2d');
+        let maskPreviewCanvas = document.getElementById('canvas-mask-preview');
+        let maskPreviewCtx = maskPreviewCanvas.getContext('2d');
+        let internalCanvas = document.getElementById('internal-process-canvas');
+        let internalCtx = internalCanvas.getContext('2d');
+
+        let isMaskViewActive = false;
+        let speechEnabled = true;
+        let currentShapeKey = "";
+        let lastSpokenTime = 0;
+        let manualThreshold = 110;
+
+        // Visualizador Three.js
+        let scene3D, camera3D, renderer3D, currentMesh3D;
+        let isMouseDown = false, previousMousePosition = { x: 0, y: 0 };
+
+        // FPS Control
+        let frameCount = 0;
+        let lastFpsUpdate = performance.now();
+
+        // ==========================================
+        // INICIALIZACIÓN DE LA APLICACIÓN
+        // ==========================================
+        window.addEventListener('load', async () => {
+            initThreeJS();
+            await startWebcam();
+            setupCanvasResize();
+            requestAnimationFrame(processFrameLoop);
+        });
+
+        function updateThresholdLabel(val) {
+            manualThreshold = parseInt(val);
+            document.getElementById('threshold-val').innerText = val;
+        }
+
+        function toggleMaskView() {
+            isMaskViewActive = !isMaskViewActive;
+            const maskText = document.getElementById('mask-status-text');
+            if (isMaskViewActive) {
+                maskPreviewCanvas.classList.remove('hidden');
+                maskText.innerText = "Ver Vista Normal";
+                showToast("Inspección de Máscara Binaria Activada", "blue");
+            } else {
+                maskPreviewCanvas.classList.add('hidden');
+                maskText.innerText = "Ver Máscara Binaria";
+                showToast("Vista Normal Activada", "green");
+            }
+        }
+
+        // ==========================================
+        // CÁMARA WEB EN MODO ESPEJO
+        // ==========================================
+        async function startWebcam() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        facingMode: 'user',
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    },
+                    audio: false
+                });
+                webcamVideo.srcObject = stream;
+                return new Promise((resolve) => {
+                    webcamVideo.onloadedmetadata = () => {
+                        webcamVideo.play();
+                        resizeCanvases();
+                        showToast("Cámara Espejo Activada", "green");
+                        resolve();
+                    };
+                });
+            } catch (err) {
+                console.error("Error al acceder a la cámara:", err);
+                showToast("Error al acceder a la cámara web", "red");
+            }
+        }
+
+        function setupCanvasResize() {
+            window.addEventListener('resize', resizeCanvases);
+        }
+
+        function resizeCanvases() {
+            if (webcamVideo && webcamVideo.videoWidth) {
+                const rect = webcamVideo.getBoundingClientRect();
+                [overlayCanvas, maskPreviewCanvas].forEach(c => {
+                    c.width = rect.width;
+                    c.height = rect.height;
+                });
+            }
+        }
+
+        // ==========================================
+        // MOTOR DE VISIÓN POR COMPUTADOR NATIVO (JS/CANVAS)
+        // ==========================================
+        function processFrameLoop() {
+            calculateFPS();
+
+            if (webcamVideo.readyState === 4 && webcamVideo.videoWidth > 0) {
+                detectGeometryInCentralROI();
+            }
+
+            requestAnimationFrame(processFrameLoop);
+        }
+
+        function calculateFPS() {
+            frameCount++;
+            const now = performance.now();
+            if (now - lastFpsUpdate >= 1000) {
+                document.getElementById('fps-display').innerText = frameCount;
+                frameCount = 0;
+                lastFpsUpdate = now;
+            }
+        }
+
+        // ALGORITMO EXCLUSIVO DE PROCESAMIENTO EN RECUADRO CENTRAL (ROI)
+        function detectGeometryInCentralROI() {
+            const vW = webcamVideo.videoWidth;
+            const vH = webcamVideo.videoHeight;
+
+            // Dimensiones del canvas interno ajustadas al tamaño real del video
+            internalCanvas.width = vW;
+            internalCanvas.height = vH;
+            internalCtx.drawImage(webcamVideo, 0, 0, vW, vH);
+
+            // Calcular las coordenadas exactas del recuadro central (240x240px en viewport)
+            const viewRect = webcamVideo.getBoundingClientRect();
+            const scaleX = vW / viewRect.width;
+            const scaleY = vH / viewRect.height;
+
+            const roiBoxSizePx = 240;
+            const roiW = Math.round(roiBoxSizePx * scaleX);
+            const roiH = Math.round(roiBoxSizePx * scaleY);
+            const roiX = Math.round((vW - roiW) / 2);
+            const roiY = Math.round((vH - roiH) / 2);
+
+            // Extracción de píxeles únicamente dentro de la Zona ROI
+            const imgData = internalCtx.getImageData(roiX, roiY, roiW, roiH);
+            const pixels = imgData.data;
+
+            // 1. Conversión a Escala de Grises y Umbralizado Adaptativo/Binarizado
+            const binaryGrid = new Uint8Array(roiW * roiH);
+            for (let i = 0; i < pixels.length; i += 4) {
+                // Luminancia ponderada
+                const gray = 0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2];
+                // Invertir para detectar objetos oscuros o claros sobre fondo contrastado
+                binaryGrid[i / 4] = (gray < manualThreshold) ? 255 : 0;
+            }
+
+            // Renderizar la máscara binaria en el canvas de inspección si está activo
+            if (isMaskViewActive) {
+                maskPreviewCtx.clearRect(0, 0, maskPreviewCanvas.width, maskPreviewCanvas.height);
+                const maskImgData = maskPreviewCtx.createImageData(roiW, roiH);
+                for (let i = 0; i < binaryGrid.length; i++) {
+                    const val = binaryGrid[i];
+                    const idx = i * 4;
+                    maskImgData.data[idx] = val === 255 ? 16 : 0;     // R
+                    maskImgData.data[idx + 1] = val === 255 ? 185 : 0; // G
+                    maskImgData.data[idx + 2] = val === 255 ? 129 : 0; // B
+                    maskImgData.data[idx + 3] = val === 255 ? 220 : 0; // Alpha
+                }
+                
+                // Dibujar la máscara ajustada a la posición del recuadro
+                const renderX = (overlayCanvas.width - roiBoxSizePx) / 2;
+                const renderY = (overlayCanvas.height - roiBoxSizePx) / 2;
+                
+                // Dibujar en canvas temporal para escalar
+                const tempC = document.createElement('canvas');
+                tempC.width = roiW; tempC.height = roiH;
+                tempC.getContext('2d').putImageData(maskImgData, 0, 0);
+                
+                maskPreviewCtx.drawImage(tempC, renderX, renderY, roiBoxSizePx, roiBoxSizePx);
+            }
+
+            // 2. Extracción de Puntos de Borde (Boundary Points)
+            const boundaryPoints = [];
+            for (let y = 1; y < roiH - 1; y += 2) {
+                for (let x = 1; x < roiW - 1; x += 2) {
+                    const idx = y * roiW + x;
+                    if (binaryGrid[idx] === 255) {
+                        // Comprobar si es un píxel de borde
+                        if (binaryGrid[idx - 1] === 0 || binaryGrid[idx + 1] === 0 ||
+                            binaryGrid[idx - roiW] === 0 || binaryGrid[idx + roiW] === 0) {
+                            boundaryPoints.push({ x: x, y: y });
+                        }
+                    }
+                }
+            }
+
+            overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+
+            if (boundaryPoints.length > 50) {
+                // 3. Obtener el Envolvente Convexo / Bounding Box del Objeto
+                let minX = roiW, maxX = 0, minY = roiH, maxY = 0;
+                let sumX = 0, sumY = 0;
+
+                boundaryPoints.forEach(p => {
+                    if (p.x < minX) minX = p.x;
+                    if (p.x > maxX) maxX = p.x;
+                    if (p.y < minY) minY = p.y;
+                    if (p.y > maxY) maxY = p.y;
+                    sumX += p.x;
+                    sumY += p.y;
+                });
+
+                const boxWidth = maxX - minX;
+                const boxHeight = maxY - minY;
+                const area = boxWidth * boxHeight;
+
+                // Filtrar ruidos pequeños
+                if (area > 1000 && boxWidth > 30 && boxHeight > 30) {
+                    
+                    // 4. Algoritmo Ramer-Douglas-Peucker para Aproximación de Polígonos
+                    const hullPoints = getConvexHull(boundaryPoints);
+                    const simplifiedPolygon = ramerDouglasPeucker(hullPoints, 8.5);
+
+                    const vertexCount = simplifiedPolygon.length;
+                    const aspectRatio = boxWidth / boxHeight;
+                    
+                    // Cálculo de Circularidad / Compacidad
+                    const perimeter = calculatePerimeter(simplifiedPolygon);
+                    const circularity = (4 * Math.PI * area) / (perimeter * perimeter);
+
+                    let detectedKey = "";
+
+                    // CLASIFICACIÓN CLARA POR GEOMETRÍA
+                    if (vertexCount === 3) {
+                        detectedKey = "Triangulo";
+                    } else if (vertexCount === 4) {
+                        if (aspectRatio >= 0.82 && aspectRatio <= 1.18) {
+                            detectedKey = "Cuadrado";
+                        } else if (aspectRatio >= 0.65 && aspectRatio <= 1.45) {
+                            detectedKey = "Rombo";
+                        } else {
+                            detectedKey = "Rectangulo";
+                        }
+                    } else if (vertexCount === 5) {
+                        detectedKey = "Pentagono";
+                    } else if (vertexCount === 6) {
+                        detectedKey = "Hexagono";
+                    } else if (vertexCount > 6) {
+                        if (circularity > 0.45) {
+                            detectedKey = "Circulo";
+                        } else {
+                            detectedKey = "Ovalo";
+                        }
+                    }
+
+                    if (detectedKey && GEOMETRY_DB[detectedKey]) {
+                        drawContourOnOverlay(simplifiedPolygon, roiX, roiY, scaleX, scaleY);
+                        updatePedagogicUI(detectedKey, vertexCount, area, aspectRatio, circularity);
+                    } else {
+                        resetPedagogicUI();
+                    }
+                } else {
+                    resetPedagogicUI();
+                }
+            } else {
+                resetPedagogicUI();
+            }
+        }
+
+        // ==========================================
+        // ALGORITMOS MATEMÁTICOS AUXILIARES (GEOMETRÍA)
+        // ==========================================
+        
+        // Algoritmo Convex Hull (Graham Scan simplificado)
+        function getConvexHull(points) {
+            if (points.length <= 3) return points;
+            points.sort((a, b) => a.x === b.x ? a.y - b.y : a.x - b.x);
+
+            const lower = [];
+            for (let i = 0; i < points.length; i++) {
+                while (lower.length >= 2 && crossProduct(lower[lower.length - 2], lower[lower.length - 1], points[i]) <= 0) {
+                    lower.pop();
+                }
+                lower.push(points[i]);
+            }
+
+            const upper = [];
+            for (let i = points.length - 1; i >= 0; i--) {
+                while (upper.length >= 2 && crossProduct(upper[upper.length - 2], upper[upper.length - 1], points[i]) <= 0) {
+                    upper.pop();
+                }
+                upper.push(points[i]);
+            }
+
+            upper.pop();
+            lower.pop();
+            return lower.concat(upper);
+        }
+
+        function crossProduct(o, a, b) {
+            return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+        }
+
+        // Algoritmo Ramer-Douglas-Peucker (Simplificación de polígonos)
+        function ramerDouglasPeucker(points, epsilon) {
+            if (points.length <= 2) return points;
+
+            let dmax = 0;
+            let index = 0;
+            const end = points.length - 1;
+
+            for (let i = 1; i < end; i++) {
+                const d = perpendicularDistance(points[i], points[0], points[end]);
+                if (d > dmax) {
+                    index = i;
+                    dmax = d;
+                }
+            }
+
+            if (dmax > epsilon) {
+                const recResults1 = ramerDouglasPeucker(points.slice(0, index + 1), epsilon);
+                const recResults2 = ramerDouglasPeucker(points.slice(index), epsilon);
+                return recResults1.slice(0, recResults1.length - 1).concat(recResults2);
+            } else {
+                return [points[0], points[end]];
+            }
+        }
+
+        function perpendicularDistance(point, lineStart, lineEnd) {
+            const dx = lineEnd.x - lineStart.x;
+            const dy = lineEnd.y - lineStart.y;
+            const mag = Math.sqrt(dx * dx + dy * dy);
+            if (mag === 0) return Math.sqrt(Math.pow(point.x - lineStart.x, 2) + Math.pow(point.y - lineStart.y, 2));
+            const pvt = ((point.x - lineStart.x) * dx + (point.y - lineStart.y) * dy) / (mag * mag);
+            const destX = lineStart.x + pvt * dx;
+            const destY = lineStart.y + pvt * dy;
+            return Math.sqrt(Math.pow(point.x - destX, 2) + Math.pow(point.y - destY, 2));
+        }
+
+        function calculatePerimeter(points) {
+            let p = 0;
+            for (let i = 0; i < points.length; i++) {
+                const next = points[(i + 1) % points.length];
+                p += Math.sqrt(Math.pow(next.x - points[i].x, 2) + Math.pow(next.y - points[i].y, 2));
+            }
+            return p;
+        }
+
+        // DIBUJAR VÉRTICES Y BORDES SOBRE EL OVERLAY
+        function drawContourOnOverlay(polygon, roiX, roiY, scaleX, scaleY) {
+            const viewW = overlayCanvas.width;
+            const viewH = overlayCanvas.height;
+
+            const renderScaleX = viewW / webcamVideo.videoWidth;
+            const renderScaleY = viewH / webcamVideo.videoHeight;
+
+            overlayCtx.strokeStyle = '#10B981';
+            overlayCtx.fillStyle = '#06B6D4';
+            overlayCtx.lineWidth = 3;
+
+            overlayCtx.beginPath();
+            polygon.forEach((pt, idx) => {
+                const realX = (pt.x + roiX) * renderScaleX;
+                const realY = (pt.y + roiY) * renderScaleY;
+
+                if (idx === 0) overlayCtx.moveTo(realX, realY);
+                else overlayCtx.lineTo(realX, realY);
+            });
+            overlayCtx.closePath();
+            overlayCtx.stroke();
+
+            // Dibujar Nodos/Vértices
+            polygon.forEach(pt => {
+                const realX = (pt.x + roiX) * renderScaleX;
+                const realY = (pt.y + roiY) * renderScaleY;
+
+                overlayCtx.beginPath();
+                overlayCtx.arc(realX, realY, 5, 0, 2 * Math.PI);
+                overlayCtx.fill();
+            });
+        }
+
+        // ACTUALIZACIÓN DE LA INTERFAZ DÍDACTICA
+        function updatePedagogicUI(key, vertices, area, aspectRatio, circularity) {
+            const data = GEOMETRY_DB[key];
+            if (!data) return;
+
+            document.getElementById('roi-status-dot').className = "w-2.5 h-2.5 rounded-full bg-brand-green animate-ping";
+            document.getElementById('roi-status-text').innerText = `DETECTADO: ${data.name2d.toUpperCase()}`;
+
+            document.getElementById('geo-shape').innerText = data.name2d;
+            document.getElementById('geo-3d-name').innerText = data.name3d.split('/')[0];
+            document.getElementById('geo-vertices').innerText = vertices;
+            document.getElementById('geo-area').innerText = `${Math.round(area)} px²`;
+
+            document.getElementById('pedagogic-title').innerText = `${data.name2d} ➔ ${data.name3d}`;
+            document.getElementById('pedagogic-desc').innerText = data.desc;
+            document.getElementById('pedagogic-sides').innerText = data.sides;
+            document.getElementById('pedagogic-nodes').innerText = data.nodes;
+            document.getElementById('pedagogic-formula').innerText = data.formula;
+
+            // Porcentaje de confianza
+            const score = Math.min(100, Math.round((aspectRatio >= 0.7 && aspectRatio <= 1.3 ? 90 : 75)));
+            document.getElementById('confidence-pct').innerText = `${score}%`;
+            document.getElementById('confidence-bar').style.width = `${score}%`;
+
+            // Proyectar objeto 3D
+            if (currentShapeKey !== key) {
+                currentShapeKey = key;
+                document.getElementById('shape-3d-title').innerText = data.name3d;
+                change3DShape(data.shape3d);
+
+                // Síntesis de Voz
+                if (speechEnabled && (performance.now() - lastSpokenTime > 4000)) {
+                    speakText(data.voice);
+                    lastSpokenTime = performance.now();
+                }
+            }
+        }
+
+        function resetPedagogicUI() {
+            document.getElementById('roi-status-dot').className = "w-2.5 h-2.5 rounded-full bg-amber-500";
+            document.getElementById('roi-status-text').innerText = "Ubique la figura en el recuadro verde";
+
+            document.getElementById('geo-shape').innerText = "Esperando...";
+            document.getElementById('geo-3d-name').innerText = "Esperando...";
+            document.getElementById('geo-vertices').innerText = "0";
+            document.getElementById('geo-area').innerText = "0 px²";
+
+            document.getElementById('confidence-pct').innerText = "0%";
+            document.getElementById('confidence-bar').style.width = "0%";
+        }
+
+        // ==========================================
+        // SÍNTESIS DE VOZ (WEB SPEECH API)
+        // ==========================================
+        function toggleSpeech() {
+            speechEnabled = !speechEnabled;
+            const icon = document.getElementById('speech-icon');
+            const status = document.getElementById('speech-status');
+
+            if (speechEnabled) {
+                icon.innerText = "🔊";
+                status.innerText = "Voz: Activada";
+                showToast("Voz Activada", "green");
+            } else {
+                icon.innerText = "🔇";
+                status.innerText = "Voz: Desactivada";
+                window.speechSynthesis.cancel();
+                showToast("Voz Silenciada", "blue");
+            }
+        }
+
+        function speakCurrentShape() {
+            if (currentShapeKey && GEOMETRY_DB[currentShapeKey]) {
+                speakText(GEOMETRY_DB[currentShapeKey].voice);
+            } else {
+                speakText("Por favor, coloque una figura geométrica dentro del recuadro central.");
+            }
+        }
+
+        function speakText(text) {
+            if (!('speechSynthesis' in window) || !speechEnabled) return;
+            window.speechSynthesis.cancel();
+
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = 'es-ES';
+            utterance.rate = 0.95;
+            window.speechSynthesis.speak(utterance);
+        }
+
+        // ==========================================
+        // RENDERIZADOR 3D INTERACTIVO (THREE.JS)
+        // ==========================================
+        function initThreeJS() {
+            const container = document.getElementById('three-container');
+            scene3D = new THREE.Scene();
+            scene3D.background = new THREE.Color(0x0B0F17);
+
+            camera3D = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 1000);
+            camera3D.position.set(0, 0, 4.2);
+
+            renderer3D = new THREE.WebGLRenderer({ antialias: true });
+            renderer3D.setSize(container.clientWidth, container.clientHeight);
+            renderer3D.setPixelRatio(window.devicePixelRatio);
+            container.appendChild(renderer3D.domElement);
+
+            // Iluminación
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+            scene3D.add(ambientLight);
+
+            const dirLight = new THREE.DirectionalLight(0x06B6D4, 1.5);
+            dirLight.position.set(5, 5, 5);
+            scene3D.add(dirLight);
+
+            const pointLight = new THREE.PointLight(0x10B981, 1.2);
+            pointLight.position.set(-5, -5, -2);
+            scene3D.add(pointLight);
+
+            // Rotación interactiva con mouse
+            const dom = renderer3D.domElement;
+            dom.addEventListener('mousedown', (e) => { isMouseDown = true; previousMousePosition = { x: e.clientX, y: e.clientY }; });
+            dom.addEventListener('mousemove', (e) => {
+                if (!isMouseDown || !currentMesh3D) return;
+                const deltaX = e.clientX - previousMousePosition.x;
+                const deltaY = e.clientY - previousMousePosition.y;
+
+                currentMesh3D.rotation.y += deltaX * 0.01;
+                currentMesh3D.rotation.x += deltaY * 0.01;
+                previousMousePosition = { x: e.clientX, y: e.clientY };
+            });
+            window.addEventListener('mouseup', () => { isMouseDown = false; });
+
+            change3DShape('cube');
+            animate3D();
+
+            window.addEventListener('resize', () => {
+                if (container && camera3D && renderer3D) {
+                    camera3D.aspect = container.clientWidth / container.clientHeight;
+                    camera3D.updateProjectionMatrix();
+                    renderer3D.setSize(container.clientWidth, container.clientHeight);
+                }
+            });
+        }
+
+        function change3DShape(shapeType) {
+            if (currentMesh3D) scene3D.remove(currentMesh3D);
+
+            let geometry;
+            switch (shapeType) {
+                case 'cube': geometry = new THREE.BoxGeometry(1.4, 1.4, 1.4); break;
+                case 'sphere': geometry = new THREE.SphereGeometry(1.0, 32, 32); break;
+                case 'pyramid': geometry = new THREE.ConeGeometry(1.1, 1.5, 4); break;
+                case 'prism': geometry = new THREE.BoxGeometry(1.7, 1.0, 1.0); break;
+                case 'octahedron': geometry = new THREE.OctahedronGeometry(1.2); break;
+                case 'cylinder': geometry = new THREE.CylinderGeometry(0.8, 0.8, 1.6, 32); break;
+                case 'pentagon_prism': geometry = new THREE.CylinderGeometry(0.9, 0.9, 1.5, 5); break;
+                case 'hexagon_prism': geometry = new THREE.CylinderGeometry(0.9, 0.9, 1.5, 6); break;
+                default: geometry = new THREE.BoxGeometry(1.4, 1.4, 1.4);
+            }
+
+            const material = new THREE.MeshStandardMaterial({
+                color: 0x3B82F6,
+                roughness: 0.25,
+                metalness: 0.3,
+            });
+
+            currentMesh3D = new THREE.Mesh(geometry, material);
+
+            // Estructura de alambre Neón
+            const wireframeGeo = new THREE.WireframeGeometry(geometry);
+            const wireframeMat = new THREE.LineBasicMaterial({ color: 0x10B981 });
+            const wireframe = new THREE.LineSegments(wireframeGeo, wireframeMat);
+            currentMesh3D.add(wireframe);
+
+            scene3D.add(currentMesh3D);
+        }
+
+        function animate3D() {
+            requestAnimationFrame(animate3D);
+            if (currentMesh3D && !isMouseDown) {
+                currentMesh3D.rotation.x += 0.006;
+                currentMesh3D.rotation.y += 0.009;
+            }
+            if (renderer3D && scene3D && camera3D) {
+                renderer3D.render(scene3D, camera3D);
+            }
+        }
+
+        // ==========================================
+        // NOTIFICACIONES
+        // ==========================================
+        function showToast(msg, type = "green") {
+            const toast = document.getElementById('toast-notification');
+            const toastMsg = document.getElementById('toast-msg');
+            const toastIcon = document.getElementById('toast-icon');
+
+            toastMsg.innerText = msg;
+            
+            if (type === "green") toastIcon.className = "w-3 h-3 rounded-full bg-brand-green";
+            else if (type === "blue") toastIcon.className = "w-3 h-3 rounded-full bg-brand-blue";
+            else toastIcon.className = "w-3 h-3 rounded-full bg-red-500";
+
+            toast.classList.remove('translate-y-20', 'opacity-0');
+            toast.classList.add('translate-y-0', 'opacity-100');
+
+            setTimeout(() => {
+                toast.classList.remove('translate-y-0', 'opacity-100');
+                toast.classList.add('translate-y-20', 'opacity-0');
+            }, 3000);
+        }
+    </script>
+</body>
+</html>
